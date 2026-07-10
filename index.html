@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>定時退社サバイバル</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+  <style>
+    html, body { margin:0; overflow:hidden; background:#101827; font-family:'Arial Black','Hiragino Kaku Gothic ProN',Meiryo,sans-serif; user-select:none; }
+    canvas { display:block; width:100vw; height:100vh; cursor:grab; }
+    #hud { position:fixed; inset:0; pointer-events:none; color:white; text-shadow:0 3px 0 #000,0 0 10px #000; }
+    #title { position:absolute; top:14px; left:20px; font-size:30px; color:#ffd54a; transform:rotate(-1deg); }
+    #help { position:absolute; left:22px; bottom:18px; font:700 14px/1.55 system-ui,sans-serif; background:rgba(0,0,0,.45); border:2px solid rgba(255,255,255,.25); border-radius:14px; padding:10px 14px; }
+    #distance { position:absolute; top:18px; right:72px; font-size:22px; text-align:right; }
+    #warp { position:absolute; top:54px; right:72px; font-size:20px; color:#54ff9f; }
+    #barWrap { position:absolute; top:100px; right:24px; width:26px; height:70vh; border:3px solid #fff; border-radius:16px; background:rgba(0,0,0,.35); overflow:hidden; }
+    #bar { position:absolute; bottom:0; left:0; width:100%; height:0%; background:linear-gradient(#49ff7a,#ffeb3b,#ff3131); }
+    #modal { position:fixed; inset:0; display:none; place-items:center; background:rgba(4,8,20,.62); z-index:5; }
+    #card { pointer-events:auto; width:min(760px,88vw); padding:34px; text-align:center; border-radius:32px; border:7px solid #fff; background:radial-gradient(circle at 20% 10%,#fff7a8,#ff72c8 48%,#7b4dff); box-shadow:0 20px 80px #000; color:#fff; text-shadow:0 5px 0 #000; transform:rotate(-1.5deg); }
+    #modalTitle { font-size:52px; margin:0 0 10px; }
+    #rank { font-size:30px; color:#ffff65; margin:16px 0 24px; }
+    button { font:900 24px system-ui,sans-serif; border:0; border-radius:999px; padding:16px 30px; background:#13f28d; color:#172018; box-shadow:0 8px 0 #087646; cursor:pointer; }
+  </style>
+</head>
+<body>
+<div id="hud"><div id="title">定時退社サバイバル</div><div id="distance"></div><div id="warp"></div><div id="barWrap"><div id="bar"></div></div><div id="help">右手首だけドラッグ：這って逃げろ！<br>Space：マウス位置へ右手ワープ（5秒CD）<br>Enter：最後に離した場所へ右手を戻す<br>上司は右手で掴んで投げ飛ばせる！</div></div>
+<div id="modal"><div id="card"><h1 id="modalTitle"></h1><div id="rank"></div><button id="retry">もう一度勤務する（リトライ）</button></div></div>
+<script>
+(() => {
+const {Engine, Render, Runner, Bodies, Body, Composite, Constraint, Mouse, MouseConstraint, Events, Vector} = Matter;
+const W=10000, H=6000, floorY=550, exitX=9800;
+const CAT_PLAYER=0x0001, CAT_FLOOR=0x0002, CAT_OFFICE=0x0004, CAT_BOSS=0x0008, CAT_DANGER=0x0010;
+let engine, world, render, runner, mouse, mouseConstraint, cameraX=0, player, boss, stamps=[], shredders=[], exitDoor, gameOver=false;
+let mouseWorld={x:500,y:250}, lastRelease={x:560,y:280}, lastWarp=-9999;
+const hudD=document.getElementById('distance'), hudW=document.getElementById('warp'), bar=document.getElementById('bar'), modal=document.getElementById('modal'), mt=document.getElementById('modalTitle'), rank=document.getElementById('rank');
+function rect(x,y,w,h,o={}){return Bodies.rectangle(x,y,w,h,{friction:.8,restitution:.05,...o});}
+function circ(x,y,r,o={}){return Bodies.circle(x,y,r,{friction:.8,restitution:.05,...o});}
+function label(text,x,y,size=18,color='white'){return {text,x,y,size,color};}
+let labels=[];
+function makePlayer(x,y){
+ const skin='#ffd3a6', suit='#26334d', red='#e51b35';
+ const head=circ(x,y-105,28,{label:'playerHead', render:{fillStyle:skin}, collisionFilter:{category:CAT_PLAYER, mask:CAT_FLOOR|CAT_OFFICE|CAT_BOSS|CAT_DANGER}});
+ const torso=rect(x,y-45,48,82,{label:'playerTorso', render:{fillStyle:suit}, collisionFilter:{category:CAT_PLAYER, mask:CAT_FLOOR|CAT_OFFICE|CAT_BOSS|CAT_DANGER}});
+ const rArm=rect(x+45,y-55,58,16,{label:'playerPart', render:{fillStyle:suit}, collisionFilter:{category:CAT_PLAYER, mask:CAT_FLOOR|CAT_OFFICE|CAT_BOSS|CAT_DANGER}});
+ const rWrist=circ(x+84,y-52,14,{label:'rightWrist', render:{fillStyle:skin}, collisionFilter:{category:CAT_PLAYER, mask:CAT_FLOOR|CAT_OFFICE|CAT_BOSS|CAT_DANGER}});
+ const lArm=rect(x-45,y-55,58,16,{label:'playerPart', render:{fillStyle:suit}, collisionFilter:{category:CAT_PLAYER, mask:CAT_FLOOR|CAT_OFFICE|CAT_BOSS|CAT_DANGER}});
+ const lWrist=circ(x-84,y-52,12,{label:'playerPart', render:{fillStyle:skin}, collisionFilter:{category:CAT_PLAYER, mask:CAT_FLOOR|CAT_OFFICE|CAT_BOSS|CAT_DANGER}});
+ const legs=[rect(x-16,y+25,18,72,{label:'playerPart',render:{fillStyle:'#1d2740'},collisionFilter:{category:CAT_PLAYER,mask:CAT_FLOOR|CAT_OFFICE|CAT_BOSS|CAT_DANGER}}),rect(x+16,y+25,18,72,{label:'playerPart',render:{fillStyle:'#1d2740'},collisionFilter:{category:CAT_PLAYER,mask:CAT_FLOOR|CAT_OFFICE|CAT_BOSS|CAT_DANGER}})];
+ const parts=[head,torso,rArm,rWrist,lArm,lWrist,...legs], cons=[];
+ function c(a,b,pa,pb,len,st=.025){cons.push(Constraint.create({bodyA:a,bodyB:b,pointA:pa,pointB:pb,length:len,stiffness:st,damping:.08,render:{strokeStyle:'#ffffff55'}}));}
+ c(head,torso,{x:0,y:24},{x:0,y:-45},14,.05); c(torso,rArm,{x:22,y:-25},{x:-26,y:0},8); c(rArm,rWrist,{x:30,y:0},{x:0,y:0},6); c(torso,lArm,{x:-22,y:-25},{x:26,y:0},8); c(lArm,lWrist,{x:-30,y:0},{x:0,y:0},6); c(torso,legs[0],{x:-14,y:38},{x:0,y:-34},8); c(torso,legs[1],{x:14,y:38},{x:0,y:-34},8);
+ let prev=torso; const tie=[]; for(let i=0;i<4;i++){let t=rect(x,y-78+i*18,13,22,{label:'tie',render:{fillStyle:red},collisionFilter:{category:CAT_PLAYER,mask:CAT_FLOOR|CAT_OFFICE|CAT_BOSS|CAT_DANGER}}); tie.push(t); parts.push(t); cons.push(Constraint.create({bodyA:prev,bodyB:t,pointA:i?{x:0,y:11}:{x:0,y:-18},pointB:{x:0,y:-11},length:3,stiffness:.012,damping:.02})); prev=t;}
+ Composite.add(world,[...parts,...cons]); return {head,torso,rWrist,parts,cons,tie};
+}
+function addOffice(){
+ for(let x=850;x<9300;x+=850){ Composite.add(world,[rect(x,floorY-35,130,34,{isStatic:true,label:'desk',render:{fillStyle:'#7b8794'},collisionFilter:{category:CAT_OFFICE}}),rect(x-45,floorY-12,16,44,{isStatic:true,render:{fillStyle:'#56616f'},collisionFilter:{category:CAT_OFFICE}}),rect(x+45,floorY-12,16,44,{isStatic:true,render:{fillStyle:'#56616f'},collisionFilter:{category:CAT_OFFICE}})]); }
+ for(let x=1500;x<9200;x+=1700){Composite.add(world, rect(x,floorY-85,70,70,{isStatic:false,label:'chair',render:{fillStyle:'#315a8a'},collisionFilter:{category:CAT_OFFICE}}));}
+ for(let x=1900;x<9000;x+=1900){Composite.add(world, rect(x,floorY-300,36,310,{isStatic:true,label:'partition',render:{fillStyle:'#b7e3ff88',strokeStyle:'#fff'},collisionFilter:{category:CAT_OFFICE}})); labels.push(label('下をくぐれ',x-45,floorY-455,16));}
+ [1200,2400,3600,4800,6000,7200,8400].forEach(x=>{let b=circ(x,floorY-165,54,{isStatic:true,label:'bald',friction:0,frictionStatic:0,render:{fillStyle:'#ffd0a0',strokeStyle:'#fff',lineWidth:8},collisionFilter:{category:CAT_OFFICE}}); Composite.add(world,b); labels.push(label('ハゲ頭\n(ツルツル)',x-42,floorY-170,14,'#111'));});
+}
+function addDangers(){
+ [2100,3900,5700,7500,9000].forEach((x,i)=>{let handle=rect(x,120,54,120,{isStatic:true,label:'stamp',render:{fillStyle:'#7a3f17'},collisionFilter:{category:CAT_DANGER}}), face=rect(x,205,170,55,{isStatic:true,label:'stamp',render:{fillStyle:'#ff3d00'},collisionFilter:{category:CAT_DANGER}}); stamps.push({handle,face,baseY:120,phase:i*.9}); Composite.add(world,[handle,face]); labels.push(label('承認',x-42,218,30));});
+ [3000,5200,7000,8800].forEach(x=>{let s=rect(x,floorY-12,360,28,{isStatic:true,isSensor:true,label:'shredder',render:{fillStyle:'#20242c'},collisionFilter:{category:CAT_DANGER}}); shredders.push(s); Composite.add(world,s); labels.push(label('悪魔のシュレッダー\n(ネクタイ吸い込み中)',x-145,floorY-42,15));});
+ exitDoor=rect(exitX,floorY-115,110,230,{isStatic:true,isSensor:true,label:'exit',render:{fillStyle:'#00ff8888',strokeStyle:'#aaffcc',lineWidth:4},collisionFilter:{category:CAT_DANGER}}); Composite.add(world,exitDoor); labels.push(label('自動ドア\n定時退社口',exitX-55,floorY-140,20));
+}
+function makeBoss(){const body=Body.create({parts:[rect(5,floorY-65,70,90,{label:'bossBody',render:{fillStyle:'#050505'}}),circ(5,floorY-132,35,{label:'bossHead',render:{fillStyle:'#f00'}})],label:'boss',friction:.35,collisionFilter:{category:CAT_BOSS,mask:CAT_FLOOR|CAT_PLAYER|CAT_BOSS}}); Composite.add(world,body); return body;}
+function setup(){ if(runner) Runner.stop(runner); if(render){Render.stop(render); render.canvas.remove();}
+ labels=[]; stamps=[]; shredders=[]; gameOver=false; cameraX=0; modal.style.display='none';
+ engine=Engine.create(); world=engine.world; engine.gravity.y=1.15; engine.timing.timeScale=1;
+ render=Render.create({element:document.body,engine,options:{width:innerWidth,height:innerHeight,wireframes:false,background:'#101827',hasBounds:true}}); Render.run(render); runner=Runner.create(); Runner.run(runner,engine);
+ Composite.add(world,[rect(W/2,floorY+35,W,70,{isStatic:true,label:'floor',render:{fillStyle:'#313846'},collisionFilter:{category:CAT_FLOOR}}),rect(-25,floorY-250,50,700,{isStatic:true,render:{fillStyle:'#111'},collisionFilter:{category:CAT_FLOOR}}),rect(W+25,floorY-250,50,700,{isStatic:true,render:{fillStyle:'#111'},collisionFilter:{category:CAT_FLOOR}})]);
+ player=makePlayer(500,360); boss=makeBoss(); addOffice(); addDangers();
+ mouse=Mouse.create(render.canvas); mouseConstraint=MouseConstraint.create(engine,{mouse,constraint:{stiffness:.18,damping:.08,render:{visible:true}},collisionFilter:{mask:CAT_PLAYER|CAT_BOSS}}); Composite.add(world,mouseConstraint);
+ Events.on(mouseConstraint,'startdrag',e=>{ if(e.body && !(e.body.label==='rightWrist'||e.body.label==='boss'||e.body.label==='bossBody'||e.body.label==='bossHead')) mouseConstraint.constraint.bodyB=null; });
+ Events.on(mouseConstraint,'enddrag',e=>{ if(e.body===player.rWrist) lastRelease={x:e.body.position.x,y:e.body.position.y}; });
+ Events.on(engine,'collisionStart',collide); Events.on(engine,'beforeUpdate',tick); Events.on(render,'afterRender',drawLabels);
+}
+function isPlayer(b){return player.parts.includes(b) || (b.parent&&player.parts.includes(b.parent));}
+function collide(e){ if(gameOver) return; for(const p of e.pairs){let a=p.bodyA,b=p.bodyB; if((a.label==='exit'&&isPlayer(b))||(b.label==='exit'&&isPlayer(a))) return finish(true); let bad=(a.label==='stamp'||b.label==='stamp'||a.parent===boss||b.parent===boss||a===boss||b===boss); let vital=(a.label==='playerHead'||a.label==='playerTorso'||b.label==='playerHead'||b.label==='playerTorso'); if(bad&&vital) return finish(false); }}
+function finish(clear){gameOver=true; engine.timing.timeScale=0; modal.style.display='grid'; mt.textContent=clear?'定時退社成功！🎉':'残業確定（お疲れ様でした）💢'; const r=['這いよる混沌の平社員','オフィスを滅ぼし定時帰宅せし者','無傷のネクタイマスター']; rank.textContent=clear?'称号：『'+r[Math.floor(Math.random()*r.length)]+'』':'称号：『終電を逃した物理演算』';}
+function tick(){ if(gameOver) return; const t=engine.timing.timestamp/1000;
+ stamps.forEach(s=>{let drop=Math.max(0,Math.sin(t*2.3+s.phase)); let y=s.baseY+Math.pow(drop,10)*330; Body.setPosition(s.handle,{x:s.handle.position.x,y}); Body.setPosition(s.face,{x:s.face.position.x,y:y+85});});
+ shredders.forEach(s=>player.parts.forEach(p=>{if(Math.abs(p.position.x-s.position.x)<190&&Math.abs(p.position.y-s.position.y)<55) Body.applyForce(p,p.position,{x:0,y:.006});}));
+ const speed=1.0+Math.min(4.3,player.torso.position.x/2200+t/45); if(boss.position.x<player.rWrist.position.x-30) Body.setVelocity(boss,{x:speed,y:boss.velocity.y}); else Body.setVelocity(boss,{x:-speed*.55,y:boss.velocity.y}); if(boss.position.y>1200||boss.position.x<-800||boss.position.x>player.torso.position.x+1400){Body.setPosition(boss,{x:Math.max(5,player.torso.position.x-900),y:floorY-90}); Body.setVelocity(boss,{x:0,y:0});}
+ cameraX += (player.torso.position.x-innerWidth*.38-cameraX)*.08; cameraX=Math.max(0,Math.min(W-innerWidth,cameraX)); render.bounds.min.x=cameraX; render.bounds.max.x=cameraX+innerWidth; render.bounds.min.y=0; render.bounds.max.y=innerHeight; Mouse.setOffset(mouse,{x:cameraX,y:0}); mouseWorld={x:mouse.position.x,y:mouse.position.y};
+ const dist=Math.max(0,Math.round(exitX-player.torso.position.x)); hudD.innerText='出口まで '+dist+' px'; const cd=Math.max(0,5-(performance.now()/1000-lastWarp)); hudW.innerText=cd<=0?'Warp: READY':'Warp: COOLDOWN '+cd.toFixed(1)+'s'; hudW.style.color=cd<=0?'#54ff9f':'#ffdf4d'; bar.style.height=Math.max(0,Math.min(100,player.torso.position.x/exitX*100))+'%';
+}
+function drawLabels(){const ctx=render.context; ctx.save(); ctx.font='900 18px sans-serif'; ctx.textBaseline='middle'; labels.forEach(l=>{if(l.x<cameraX-250||l.x>cameraX+innerWidth+250)return; ctx.fillStyle=l.color; ctx.strokeStyle='rgba(255,255,255,.8)'; ctx.lineWidth=3; l.text.split('\n').forEach((line,i)=>ctx.fillText(line,l.x,l.y+i*l.size*1.15));}); ctx.fillStyle='#fff'; ctx.font='900 17px sans-serif'; ctx.fillText('上司（残業の悪魔）',boss.position.x-70,boss.position.y-4); ctx.restore();}
+addEventListener('keydown',e=>{ if(gameOver) return; if(e.code==='Space'){e.preventDefault(); let now=performance.now()/1000; if(now-lastWarp>=5){lastWarp=now; Body.setPosition(player.rWrist,mouseWorld); Body.setVelocity(player.rWrist,{x:0,y:0}); mouseConstraint.constraint.bodyB=player.rWrist; mouseConstraint.constraint.pointB={x:0,y:0}; mouseConstraint.constraint.pointA=mouseWorld;}} if(e.code==='Enter'){Body.setPosition(player.rWrist,lastRelease); Body.setVelocity(player.rWrist,{x:0,y:0});}});
+addEventListener('resize',()=>{render.canvas.width=innerWidth; render.canvas.height=innerHeight; render.options.width=innerWidth; render.options.height=innerHeight;});
+document.getElementById('retry').onclick=setup; setup();
+})();
+</script>
+</body>
+</html>
